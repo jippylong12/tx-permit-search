@@ -44,29 +44,34 @@ def analyze_word_frequency(scopes):
 
 
 def print_scopes(data):
-    """Print all project scopes in a readable format"""
+    """Print all project scopes in a readable format, with project/facility names and date"""
     if not data:
         return
 
-    # Get scopes and project numbers
+    # Get scopes, project numbers, project names, facility names, and date
     scopes = []
     for item in data:
         if item.get('success') and item.get('scope_of_work'):
-            scopes.append((item['project_number'], item['scope_of_work']))
+            project_name = item.get('ProjectName', '')
+            facility_name = item.get('FacilityName', '')
+            project_date = item.get('ProjectCreatedOn', '')  # Default to empty string if missing
+            scopes.append((
+                item['project_number'], project_name, facility_name, project_date, item['scope_of_work']
+            ))
 
     # Print basic stats
     print(f"\n=== Project Scope Analysis ===")
     print(f"Total projects with scopes: {len(scopes)}")
 
     # Print scope statistics
-    scope_lengths = [len(s[1]) for s in scopes]
+    scope_lengths = [len(s[4]) for s in scopes]
     avg_length = sum(scope_lengths) / len(scope_lengths) if scope_lengths else 0
     print(f"Average scope length: {avg_length:.1f} characters")
     print(f"Shortest scope: {min(scope_lengths)} characters")
     print(f"Longest scope: {max(scope_lengths)} characters")
 
     # Extract just the text for frequency analysis
-    scope_texts = [s[1] for s in scopes]
+    scope_texts = [s[4] for s in scopes]
     top_words = analyze_word_frequency(scope_texts)
 
     # Print top words
@@ -74,22 +79,22 @@ def print_scopes(data):
     for word, count in top_words:
         print(f"{word}: {count}")
 
-    # Print all scopes
+    # Print all scopes with project/facility names and date
     print("\n=== All Project Scopes ===")
-    print(f"{'Project Number':<20} {'Scope of Work':<60}")
-    print(f"{'-' * 19:<20} {'-' * 59:<60}")
+    print(f"{'Project Number':<20} {'Project Name':<30} {'Facility Name':<30} {'Date':<12} {'Scope of Work':<60}")
+    print(f"{'-' * 19:<20} {'-' * 29:<30} {'-' * 29:<30} {'-' * 11:<12} {'-' * 59:<60}")
 
-    for project_number, scope in scopes:
+    for project_number, project_name, facility_name, project_date, scope in scopes:
         # Wrap text to make it more readable
         wrapped_scope = fill(scope, width=60)
         lines = wrapped_scope.split('\n')
 
-        # Print first line with project number
-        print(f"{project_number:<20} {lines[0]:<60}")
+        # Print first line with all columns
+        print(f"{project_number:<20} {project_name[:29]:<30} {facility_name[:29]:<30} {project_date[:11]:<12} {lines[0]:<60}")
 
-        # Print remaining lines indented
+        # Print remaining scope lines indented under "Scope of Work"
         for line in lines[1:]:
-            print(f"{'':<20} {line:<60}")
+            print(f"{'':<20} {'':<30} {'':<30} {'':<12} {line:<60}")
 
         print()  # Empty line between projects
 

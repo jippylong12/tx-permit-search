@@ -9,8 +9,8 @@ from tqdm import tqdm
 # --- Settings ---
 INPUT_FILE = 'tabs_projects_9001.pkl'
 OUTPUT_FILE = 'project_scopes.pkl'
-MAX_PROJECTS = 1  # Maximum number of projects to process from the input file
-MAX_CONCURRENT_REQUESTS = 5  # Maximum number of concurrent async requests
+MAX_PROJECTS = 5000  # Maximum number of projects to process from the input file
+MAX_CONCURRENT_REQUESTS = 50  # Maximum number of concurrent async requests
 
 
 async def fetch_project_details(session, project_number, semaphore):
