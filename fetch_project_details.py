@@ -13,8 +13,8 @@ MAX_PROJECTS = 5000  # Maximum number of projects to process from the input file
 MAX_CONCURRENT_REQUESTS = 50  # Maximum number of concurrent async requests
 
 
-async def fetch_project_details(session, project_number, semaphore):
-    """Fetch project details page and extract the scope of work"""
+async def fetch_project_details(session, project_number, semaphore, ref=None):
+    """Fetch project details page and extract the scope of work plus project meta info."""
     url = f"https://www.tdlr.texas.gov/TABS/Search/Project/{project_number}"
 
     async with semaphore:
@@ -24,45 +24,45 @@ async def fetch_project_details(session, project_number, semaphore):
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
 
-                    # Find the Scope of Work element
-                    # Look for the dt element with text 'Scope of Work:'
+                    # Find Scope of Work
                     scope_dt = soup.find('dt', string=re.compile(r'Scope of Work:', re.IGNORECASE))
-
+                    scope_text = None
                     if scope_dt:
-                        # Get the next dd element which contains the scope of work text
                         scope_dd = scope_dt.find_next('dd')
                         if scope_dd:
                             scope_text = scope_dd.text.strip()
-                            return {
-                                'project_number': project_number,
-                                'scope_of_work': scope_text,
-                                'success': True
-                            }
 
-                    return {
-                        'project_number': project_number,
-                        'scope_of_work': None,
-                        'success': False,
-                        'error': 'Scope of work not found'
+                    d = {
+                        "project_number": project_number,
+                        "scope_of_work": scope_text,
+                        "success": True,
                     }
+
+                    # Add ONLY the requested camelCase keys
+                    if ref:
+                        d["ProjectName"] = ref.get("ProjectName")
+                        d["ProjectCreatedOn"] = ref.get("ProjectCreatedOn")
+                        d["FacilityName"] = ref.get("FacilityName")
+                        d["City"] = ref.get("City")
+                        d["County"] = ref.get("County")
+
+                    return d
                 else:
                     return {
-                        'project_number': project_number,
-                        'scope_of_work': None,
-                        'success': False,
-                        'error': f'HTTP {response.status}'
+                        "project_number": project_number,
+                        "scope_of_work": None,
+                        "success": False,
+                        "error": f"HTTP {response.status}"
                     }
         except Exception as e:
             return {
-                'project_number': project_number,
-                'scope_of_work': None,
-                'success': False,
-                'error': str(e)
+                "project_number": project_number,
+                "scope_of_work": None,
+                "success": False,
+                "error": str(e)
             }
 
-
 async def main():
-    # Load projects from the pickle file
     try:
         with open(INPUT_FILE, 'rb') as f:
             projects = pickle.load(f)
@@ -71,41 +71,43 @@ async def main():
         print(f"[ERROR] Failed to load projects: {e}")
         return
 
-    # Limit the number of projects if needed
     projects = projects[:MAX_PROJECTS]
     print(f"[INFO] Processing {len(projects)} projects")
 
-    # Extract project numbers
-    project_numbers = [project.get('ProjectNumber') for project in projects
-                       if project.get('ProjectNumber')]
+    # Prepare project meta dicts for each project
+    project_refs = [
+        {
+            "ProjectNumber": proj.get("ProjectNumber"),
+            "ProjectName": proj.get("ProjectName"),
+            "ProjectCreatedOn": proj.get("ProjectCreatedOn"),
+            "FacilityName": proj.get("FacilityName"),
+            "City": proj.get("City"),
+            "County": proj.get("County"),
+        }
+        for proj in projects
+        if proj.get("ProjectNumber")
+    ]
 
-    # Create a semaphore to limit the number of concurrent requests
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-
-    # Create results list
     results = []
-
-    # Create async session and tasks
     async with aiohttp.ClientSession() as session:
-        tasks = []
-        for project_number in project_numbers:
-            task = fetch_project_details(session, project_number, semaphore)
-            tasks.append(task)
+        tasks = [
+            fetch_project_details(session, ref["ProjectNumber"], semaphore, ref=ref)
+            for ref in project_refs
+        ]
 
-        # Use tqdm to show progress
         for future in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Fetching project details"):
             result = await future
-            if result['success']:
+            if result.get("success"):
                 results.append(result)
             else:
-                print(f"[WARN] Failed for {result['project_number']}: {result.get('error', 'Unknown error')}")
+                print(f"[WARN] Failed for {result.get('project_number')}: {result.get('error', 'Unknown error')}")
 
-    # Save results to pickle file
     with open(OUTPUT_FILE, 'wb') as f:
         pickle.dump(results, f)
 
     print(f"[SUCCESS] Saved {len(results)} project scopes to {OUTPUT_FILE}")
-    print(f"Success rate: {len(results)}/{len(project_numbers)} = {len(results) / len(project_numbers) * 100:.2f}%")
+    print(f"Success rate: {len(results)}/{len(project_refs)} = {len(results) / len(project_refs) * 100:.2f}%")
 
 
 if __name__ == "__main__":
