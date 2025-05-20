@@ -5,12 +5,15 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 from tqdm import tqdm
+import lxml
 
 # --- Settings ---
 INPUT_FILE = 'tabs_projects_9001.pkl'
 OUTPUT_FILE = 'project_scopes.pkl'
-MAX_PROJECTS = 5000  # Maximum number of projects to process from the input file
-MAX_CONCURRENT_REQUESTS = 50  # Maximum number of concurrent async requests
+MAX_PROJECTS = 500  # Maximum number of projects to process from the input file
+# Experiment with this value, e.g., 50, 75, 100.
+# Be cautious of server limits.
+MAX_CONCURRENT_REQUESTS = 50  # Increased for example
 
 
 async def fetch_project_details(session, project_number, semaphore, ref=None):
@@ -19,10 +22,15 @@ async def fetch_project_details(session, project_number, semaphore, ref=None):
 
     async with semaphore:
         try:
+            # Consider adding a timeout to the session.get() call if needed
+            # timeout = aiohttp.ClientTimeout(total=60) # 60 seconds total timeout
+            # async with session.get(url, timeout=timeout) as response:
             async with session.get(url) as response:
                 if response.status == 200:
                     html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
+                    # Use lxml parser for better performance
+                    # Ensure you have lxml installed: pip install lxml
+                    soup = BeautifulSoup(html, 'lxml')
 
                     # Find Scope of Work
                     scope_dt = soup.find('dt', string=re.compile(r'Scope of Work:', re.IGNORECASE))
@@ -54,6 +62,13 @@ async def fetch_project_details(session, project_number, semaphore, ref=None):
                         "success": False,
                         "error": f"HTTP {response.status}"
                     }
+        except asyncio.TimeoutError: # Example of handling timeout
+            return {
+                "project_number": project_number,
+                "scope_of_work": None,
+                "success": False,
+                "error": "Request timed out"
+            }
         except Exception as e:
             return {
                 "project_number": project_number,
@@ -71,10 +86,9 @@ async def main():
         print(f"[ERROR] Failed to load projects: {e}")
         return
 
-    projects = projects[:MAX_PROJECTS]
-    print(f"[INFO] Processing {len(projects)} projects")
+    projects_to_process = projects[:MAX_PROJECTS]
+    print(f"[INFO] Processing {len(projects_to_process)} projects")
 
-    # Prepare project meta dicts for each project
     project_refs = [
         {
             "ProjectNumber": proj.get("ProjectNumber"),
@@ -84,13 +98,26 @@ async def main():
             "City": proj.get("City"),
             "County": proj.get("County"),
         }
-        for proj in projects
+        for proj in projects_to_process # Ensure we use the sliced list
         if proj.get("ProjectNumber")
     ]
 
+    if not project_refs:
+        print("[INFO] No projects to process after filtering.")
+        return
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     results = []
-    async with aiohttp.ClientSession() as session:
+
+    # Configure TCPConnector
+    # Set limit to be at least MAX_CONCURRENT_REQUESTS
+    # Set limit_per_host to be at least MAX_CONCURRENT_REQUESTS for a single-site scraper
+    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS * 2, limit_per_host=MAX_CONCURRENT_REQUESTS)
+    
+    # Define a client timeout (optional, but good practice)
+    timeout = aiohttp.ClientTimeout(total=60) # e.g., 60 seconds for the entire request including connection
+
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         tasks = [
             fetch_project_details(session, ref["ProjectNumber"], semaphore, ref=ref)
             for ref in project_refs
@@ -107,7 +134,11 @@ async def main():
         pickle.dump(results, f)
 
     print(f"[SUCCESS] Saved {len(results)} project scopes to {OUTPUT_FILE}")
-    print(f"Success rate: {len(results)}/{len(project_refs)} = {len(results) / len(project_refs) * 100:.2f}%")
+    if len(project_refs) > 0:
+        success_rate = len(results) / len(project_refs) * 100
+        print(f"Success rate: {len(results)}/{len(project_refs)} = {success_rate:.2f}%")
+    else:
+        print("No projects were processed to calculate a success rate.")
 
 
 if __name__ == "__main__":
