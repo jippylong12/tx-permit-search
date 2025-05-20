@@ -7,9 +7,9 @@ from http.cookiejar import MozillaCookieJar
 COOKIE_FILE = 'cookies.txt'
 SEARCH_URL = 'https://www.tdlr.texas.gov/TABS/Search/SearchProjects'
 OUTPUT_FILE = 'tabs_projects_9001.pkl'
-RECORD_LIMIT = 1000
+RECORD_LIMIT = 5000
 PAGE_SIZE = 100
-TYPE_OF_WORK = '9001'
+TYPE_OF_WORK = ''
 
 # --- Session Setup ---
 session = requests.Session()
