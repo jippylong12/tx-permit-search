@@ -12,7 +12,7 @@ from tabulate import tabulate
 CUTOFF_DATE_STR = '2025-05-17'  # Example: '2025-05-21'
 COOKIE_FILE = 'cookies.txt'
 SEARCH_URL = 'https://www.tdlr.texas.gov/TABS/Search/SearchProjects'
-RECORD_LIMIT = 250
+RECORD_LIMIT = 200
 PAGE_SIZE = 100
 TYPE_OF_WORK = ''
 OUTPUT_DATA_FOLDER = 'output_data'  # Folder to store pickle files
@@ -233,8 +233,7 @@ def main():
                     '...' if len(str(item.get('FacilityName', 'N/A'))) > 28 else ''),
                 'City (ID)': item.get('City') if item.get('City') is not None else 'N/A',
                 'County (ID)': item.get('County') if item.get('County') is not None else 'N/A',
-                'Scope of Work': str(item.get('ScopeOfWork', 'N/A'))[:50] + (
-                    '...' if len(str(item.get('ScopeOfWork', 'N/A'))) > 50 else '')
+                'Scope of Work': str(item.get('ScopeOfWork', 'N/A'))
             }
             display_list.append(display_item)
 
