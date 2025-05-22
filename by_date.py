@@ -1,3 +1,4 @@
+
 import os
 import re
 import requests
@@ -9,7 +10,7 @@ from bs4 import BeautifulSoup
 from tabulate import tabulate
 
 # --- Settings ---
-CUTOFF_DATE_STR = '2025-05-17'  # Example: '2025-05-21'
+CUTOFF_DATE_STR = '2025-05-21'  # Example: '2025-05-22'
 COOKIE_FILE = 'cookies.txt'
 SEARCH_URL = 'https://www.tdlr.texas.gov/TABS/Search/SearchProjects'
 RECORD_LIMIT = 200
@@ -223,8 +224,9 @@ def main():
     if report_data:
         print("\n--- Project Report ---")
         display_list = []
-        for item in report_data:
+        for i, item in enumerate(report_data):
             display_item = {
+                'No.': i + 1,  # Add the index number
                 'Project Number': item.get('ProjectNumber', 'N/A'),
                 'Project Name': str(item.get('ProjectName', 'N/A'))[:38] + (
                     '...' if len(str(item.get('ProjectName', 'N/A'))) > 38 else ''),
@@ -238,6 +240,7 @@ def main():
             display_list.append(display_item)
 
         headers = {
+            'No.': 'No.',
             'Project Number': 'Project Number',
             'Project Name': 'Project Name',
             'Date': 'Date',
