@@ -1,4 +1,3 @@
-
 import os
 import re
 import requests
@@ -127,6 +126,10 @@ def main():
     pickle_filename = os.path.join(OUTPUT_DATA_FOLDER,
                                    f'project_report_data_{today_str}_cutoff_{cutoff_date_filename_part}.pkl')
 
+    # --- Define filename for the combined string output ---
+    combined_string_filename = os.path.join(OUTPUT_DATA_FOLDER,
+                                            f'combined_projects_for_llm_{today_str}_cutoff_{cutoff_date_filename_part}.txt')
+
     report_data = []
 
     # --- Check if data already exists ---
@@ -224,10 +227,17 @@ def main():
     if report_data:
         print("\n--- Project Report ---")
         display_list = []
+        combined_strings_for_llm = []
+
         for i, item in enumerate(report_data):
+            project_number = item.get('ProjectNumber', 'N/A')
+            scope_of_work = item.get('ScopeOfWork', 'N/A')
+            combined_string = f"Project: {project_number}, Scope: {scope_of_work}"
+            combined_strings_for_llm.append(combined_string)
+
             display_item = {
-                'No.': i + 1,  # Add the index number
-                'Project Number': item.get('ProjectNumber', 'N/A'),
+                'No.': i + 1,
+                'Project Number': project_number,
                 'Project Name': str(item.get('ProjectName', 'N/A'))[:38] + (
                     '...' if len(str(item.get('ProjectName', 'N/A'))) > 38 else ''),
                 'Date': item.get('Date', 'N/A'),
@@ -235,7 +245,7 @@ def main():
                     '...' if len(str(item.get('FacilityName', 'N/A'))) > 28 else ''),
                 'City (ID)': item.get('City') if item.get('City') is not None else 'N/A',
                 'County (ID)': item.get('County') if item.get('County') is not None else 'N/A',
-                'Scope of Work': str(item.get('ScopeOfWork', 'N/A'))
+                'Scope of Work': scope_of_work
             }
             display_list.append(display_item)
 
@@ -250,6 +260,19 @@ def main():
             'Scope of Work': 'Scope of Work'
         }
         print(tabulate(display_list, headers=headers, tablefmt="grid"))
+
+        # --- Write the consolidated string to a file ---
+        if combined_strings_for_llm:
+            try:
+                with open(combined_string_filename, 'w', encoding='utf-8') as f:
+                    for s in combined_strings_for_llm:
+                        f.write(s + "\n")
+                print(f"\n[SUCCESS] Combined LLM string successfully saved to {combined_string_filename}")
+            except IOError as e:
+                print(f"\n[ERROR] Failed to save combined LLM string to {combined_string_filename}: {e}")
+        else:
+            print("\n[INFO] No combined LLM strings to save.")
+
     else:
         print("\n[INFO] No records to display based on the specified criteria (either from file or after fetching).")
 
