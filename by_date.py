@@ -9,13 +9,26 @@ from bs4 import BeautifulSoup
 from tabulate import tabulate
 
 # --- Settings ---
-CUTOFF_DATE_STR = '2025-05-21'  # Example: '2025-05-22'
+CUTOFF_DATE_STR = '2025-06-17'
 COOKIE_FILE = 'cookies.txt'
 SEARCH_URL = 'https://www.tdlr.texas.gov/TABS/Search/SearchProjects'
-RECORD_LIMIT = 200
+RECORD_LIMIT = 5000
 PAGE_SIZE = 100
 TYPE_OF_WORK = ''
 OUTPUT_DATA_FOLDER = 'output_data'  # Folder to store pickle files
+
+# --- Filter Settings ---
+TARGET_COUNTIES = ['Martin', 'Midland', 'Ector']  # Counties to filter for console display
+EV_CHARGING_TERMS = [
+    'electric vehicle', 'ev', 'charging', 'charger', 'station',
+    'fast charging', 'dc fast', 'level 2', 'level 3',
+    'tesla', 'supercharger', 'chargepoint', 'electrify america',
+    'battery', 'lithium', 'power supply', 'electrical',
+    'renewable', 'solar', 'grid', 'infrastructure',
+    'plug-in', 'charging port', 'charging network',
+    'electric car', 'electric truck', 'hybrid',
+    'charging hub', 'charging plaza'
+]
 
 # --- Global headers for requests ---
 REQUEST_HEADERS = {
@@ -66,7 +79,7 @@ def build_form_data(start):
         'columns[8][search][regex]': 'false',
         'columns[9][data]': 'EstimatedCost', 'columns[9][name]': '', 'columns[9][searchable]': 'true',
         'columns[9][orderable]': 'true', 'columns[9][search][value]': '', 'columns[9][search][regex]': 'false',
-        'columns[10][data]': 'DataVersionId', 'columns[10][name]': '', 'columns[10][searchable]': 'false',
+        'columns[10][data]': 'DataVersionId', 'columns[10][name]': '', 'columns[10][searchable]': 'true',
         'columns[10][orderable]': 'true', 'columns[10][search][value]': '', 'columns[10][search][regex]': 'false',
         'order[0][column]': '3',
         'order[0][dir]': 'desc',
@@ -99,6 +112,42 @@ def fetch_scope_of_work(http_session, project_number):
     except Exception as e:
         print(f"[WARNING] Error parsing scope for project {project_number}: {e}")
         return "Error parsing"
+
+
+# --- Function to check if project matches filters ---
+def matches_filter_criteria(item):
+    """Check if project matches county and EV charging term filters"""
+    # Check county filter
+    county_name = item.get('CountyName', '')
+    if county_name not in TARGET_COUNTIES:
+        return False
+
+    # Check EV charging terms in scope of work
+    scope_of_work = item.get('ScopeOfWork', '').lower()
+    project_name = item.get('ProjectName', '').lower()
+    facility_name = item.get('FacilityName', '').lower()
+
+    # Combine all text fields for searching
+    search_text = f"{scope_of_work} {project_name} {facility_name}"
+
+    # Check if any EV charging term is present
+    for term in EV_CHARGING_TERMS:
+        if term.lower() in search_text:
+            return True
+
+    return False
+
+
+# --- Function to get county name from ID ---
+def get_county_name_from_id(county_id):
+    """Get county name from county ID using reverse lookup"""
+    if county_id is None:
+        return 'N/A'
+
+    for name, id_val in LOOKUP.get("COUNTIES", {}).items():
+        if str(id_val) == str(county_id):
+            return name
+    return 'N/A'
 
 
 # --- Main script logic ---
@@ -207,6 +256,7 @@ def main():
                     'FacilityName': record.get('FacilityName', 'N/A'),
                     'City': city_id,
                     'County': county_id,
+                    'CountyName': county_name,  # Keep original county name for filtering
                     'ScopeOfWork': scope_of_work
                 })
         report_data = temp_report_data  # Assign to the main report_data variable
@@ -225,54 +275,80 @@ def main():
 
     # --- Generate and Display Table using Tabulate ---
     if report_data:
-        print("\n--- Project Report ---")
-        display_list = []
-        combined_strings_for_llm = []
+        print("\n--- Complete Project Report (All Data) ---")
+        print(f"Total records in dataset: {len(report_data)}")
 
-        for i, item in enumerate(report_data):
-            project_number = item.get('ProjectNumber', 'N/A')
-            scope_of_work = item.get('ScopeOfWork', 'N/A')
-            combined_string = f"Project: {project_number}, Scope: {scope_of_work}"
-            combined_strings_for_llm.append(combined_string)
+        # Filter data for console display
+        filtered_data = []
+        for item in report_data:
+            # Add county name if not present (for compatibility with existing data)
+            if 'CountyName' not in item and item.get('County') is not None:
+                item['CountyName'] = get_county_name_from_id(item['County'])
 
-            display_item = {
-                'No.': i + 1,
-                'Project Number': project_number,
-                'Project Name': str(item.get('ProjectName', 'N/A'))[:38] + (
-                    '...' if len(str(item.get('ProjectName', 'N/A'))) > 38 else ''),
-                'Date': item.get('Date', 'N/A'),
-                'Facility Name': str(item.get('FacilityName', 'N/A'))[:28] + (
-                    '...' if len(str(item.get('FacilityName', 'N/A'))) > 28 else ''),
-                'City (ID)': item.get('City') if item.get('City') is not None else 'N/A',
-                'County (ID)': item.get('County') if item.get('County') is not None else 'N/A',
-                'Scope of Work': scope_of_work
+            if matches_filter_criteria(item):
+                filtered_data.append(item)
+
+        print(f"\n--- Filtered Project Report (Martin, Midland, Ector Counties + EV Charging Terms) ---")
+        print(f"Filtered records: {len(filtered_data)}")
+        print(f"Target Counties: {', '.join(TARGET_COUNTIES)}")
+        print(f"EV Charging Terms: {', '.join(EV_CHARGING_TERMS[:10])}... (and {len(EV_CHARGING_TERMS) - 10} more)")
+
+        if filtered_data:
+            display_list = []
+            combined_strings_for_llm = []
+
+            # Process ALL data for file output
+            for i, item in enumerate(report_data):
+                project_number = item.get('ProjectNumber', 'N/A')
+                scope_of_work = item.get('ScopeOfWork', 'N/A')
+                combined_string = f"Project: {project_number}, Scope: {scope_of_work}"
+                combined_strings_for_llm.append(combined_string)
+
+            # Process FILTERED data for console display
+            for i, item in enumerate(filtered_data):
+                project_number = item.get('ProjectNumber', 'N/A')
+                scope_of_work = item.get('ScopeOfWork', 'N/A')
+
+                display_item = {
+                    'No.': i + 1,
+                    'Project Number': project_number,
+                    'Project Name': str(item.get('ProjectName', 'N/A'))[:38] + (
+                        '...' if len(str(item.get('ProjectName', 'N/A'))) > 38 else ''),
+                    'Date': item.get('Date', 'N/A'),
+                    'Facility Name': str(item.get('FacilityName', 'N/A'))[:28] + (
+                        '...' if len(str(item.get('FacilityName', 'N/A'))) > 28 else ''),
+                    'City (ID)': item.get('City') if item.get('City') is not None else 'N/A',
+                    'County': item.get('CountyName', 'N/A'),
+                    'Scope of Work': scope_of_work
+                }
+                display_list.append(display_item)
+
+            headers = {
+                'No.': 'No.',
+                'Project Number': 'Project Number',
+                'Project Name': 'Project Name',
+                'Date': 'Date',
+                'Facility Name': 'Facility Name',
+                'City (ID)': 'City (ID)',
+                'County': 'County',
+                'Scope of Work': 'Scope of Work'
             }
-            display_list.append(display_item)
+            print(tabulate(display_list, headers=headers, tablefmt="grid"))
 
-        headers = {
-            'No.': 'No.',
-            'Project Number': 'Project Number',
-            'Project Name': 'Project Name',
-            'Date': 'Date',
-            'Facility Name': 'Facility Name',
-            'City (ID)': 'City (ID)',
-            'County (ID)': 'County (ID)',
-            'Scope of Work': 'Scope of Work'
-        }
-        print(tabulate(display_list, headers=headers, tablefmt="grid"))
-
-        # --- Write the consolidated string to a file ---
-        if combined_strings_for_llm:
-            try:
-                with open(combined_string_filename, 'w', encoding='utf-8') as f:
-                    for s in combined_strings_for_llm:
-                        f.write(s + "\n")
-                print(f"\n[SUCCESS] Combined LLM string successfully saved to {combined_string_filename}")
-            except IOError as e:
-                print(f"\n[ERROR] Failed to save combined LLM string to {combined_string_filename}: {e}")
+            # --- Write the consolidated string to a file (ALL DATA) ---
+            if combined_strings_for_llm:
+                try:
+                    with open(combined_string_filename, 'w', encoding='utf-8') as f:
+                        for s in combined_strings_for_llm:
+                            f.write(s + "\n")
+                    print(
+                        f"\n[SUCCESS] Combined LLM string (ALL {len(combined_strings_for_llm)} records) successfully saved to {combined_string_filename}")
+                except IOError as e:
+                    print(f"\n[ERROR] Failed to save combined LLM string to {combined_string_filename}: {e}")
+            else:
+                print("\n[INFO] No combined LLM strings to save.")
         else:
-            print("\n[INFO] No combined LLM strings to save.")
-
+            print("\n[INFO] No records match the filter criteria for display.")
     else:
         print("\n[INFO] No records to display based on the specified criteria (either from file or after fetching).")
 
