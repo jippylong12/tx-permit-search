@@ -7,6 +7,7 @@ from constants import LOOKUP  # Import the LOOKUP dictionary
 import pickle
 from bs4 import BeautifulSoup
 from tabulate import tabulate
+import json
 
 # --- Settings ---
 CUTOFF_DATE_STR = '2025-06-17'
@@ -16,6 +17,7 @@ RECORD_LIMIT = 5000
 PAGE_SIZE = 100
 TYPE_OF_WORK = ''
 OUTPUT_DATA_FOLDER = 'output_data'  # Folder to store pickle files
+CHECKPOINT_INTERVAL = 100  # Save progress every 100 records
 
 # --- Filter Settings ---
 TARGET_COUNTIES = ['Martin', 'Midland', 'Ector']  # Counties to filter for console display
@@ -32,7 +34,85 @@ EV_CHARGING_TERMS = [
 
 # --- Global headers for requests ---
 REQUEST_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
+
+def get_checkpoint_files(base_name):
+    """Generate checkpoint file names"""
+    return {
+        'progress': f"{base_name}_progress.json",
+        'processed_data': f"{base_name}_processed.pkl",
+        'remaining_ids': f"{base_name}_remaining_ids.pkl"
+    }
+
+
+def save_checkpoint(checkpoint_files, processed_data, remaining_project_ids, current_index, total_count):
+    """Save current progress to checkpoint files"""
+    try:
+        # Save progress metadata
+        progress_data = {
+            'current_index': current_index,
+            'total_count': total_count,
+            'processed_count': len(processed_data),
+            'remaining_count': len(remaining_project_ids),
+            'timestamp': datetime.now().isoformat()
+        }
+
+        with open(checkpoint_files['progress'], 'w') as f:
+            json.dump(progress_data, f, indent=2)
+
+        # Save processed data
+        with open(checkpoint_files['processed_data'], 'wb') as f:
+            pickle.dump(processed_data, f)
+
+        # Save remaining project IDs
+        with open(checkpoint_files['remaining_ids'], 'wb') as f:
+            pickle.dump(remaining_project_ids, f)
+
+        print(f"[CHECKPOINT] Progress saved: {len(processed_data)} processed, {len(remaining_project_ids)} remaining")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to save checkpoint: {e}")
+        return False
+
+
+def load_checkpoint(checkpoint_files):
+    """Load progress from checkpoint files"""
+    try:
+        if not os.path.exists(checkpoint_files['progress']):
+            return None, None, None, None, None
+
+        with open(checkpoint_files['progress'], 'r') as f:
+            progress_data = json.load(f)
+
+        with open(checkpoint_files['processed_data'], 'rb') as f:
+            processed_data = pickle.load(f)
+
+        with open(checkpoint_files['remaining_ids'], 'rb') as f:
+            remaining_project_ids = pickle.load(f)
+
+        current_index = progress_data['current_index']
+        total_count = progress_data['total_count']
+
+        print(f"[RESUME] Found checkpoint: {len(processed_data)} processed, {len(remaining_project_ids)} remaining")
+        print(f"[RESUME] Checkpoint created at: {progress_data['timestamp']}")
+
+        return processed_data, remaining_project_ids, current_index, total_count, progress_data
+    except Exception as e:
+        print(f"[ERROR] Failed to load checkpoint: {e}")
+        return None, None, None, None, None
+
+
+def cleanup_checkpoint_files(checkpoint_files):
+    """Remove checkpoint files after successful completion"""
+    try:
+        for file_path in checkpoint_files.values():
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"[CLEANUP] Removed checkpoint file: {file_path}")
+    except Exception as e:
+        print(f"[WARNING] Failed to cleanup some checkpoint files: {e}")
 
 
 # --- Date Parsing Function ---
@@ -168,36 +248,53 @@ def main():
     else:
         print(f"[INFO] Cookie file {COOKIE_FILE} not found. Proceeding without loaded cookies.")
 
-    # --- Define pickle filename based on current date and cutoff date ---
+    # --- Define file names ---
     today_str = datetime.now().strftime('%Y-%m-%d')
-    # Sanitize CUTOFF_DATE_STR for filename (e.g., replace '-' with '_')
     cutoff_date_filename_part = CUTOFF_DATE_STR.replace('-', '_')
-    pickle_filename = os.path.join(OUTPUT_DATA_FOLDER,
-                                   f'project_report_data_{today_str}_cutoff_{cutoff_date_filename_part}.pkl')
 
-    # --- Define filename for the combined string output ---
+    base_filename = f'project_report_data_{today_str}_cutoff_{cutoff_date_filename_part}'
+    pickle_filename = os.path.join(OUTPUT_DATA_FOLDER, f'{base_filename}.pkl')
     combined_string_filename = os.path.join(OUTPUT_DATA_FOLDER,
                                             f'combined_projects_for_llm_{today_str}_cutoff_{cutoff_date_filename_part}.txt')
 
-    report_data = []
+    # Get checkpoint file names
+    checkpoint_files = get_checkpoint_files(os.path.join(OUTPUT_DATA_FOLDER, base_filename))
 
-    # --- Check if data already exists ---
+    # --- Check for existing complete data ---
     if os.path.exists(pickle_filename):
-        print(f"[INFO] Found existing data file: {pickle_filename}")
+        print(f"[INFO] Found existing complete data file: {pickle_filename}")
         try:
             with open(pickle_filename, 'rb') as f:
                 report_data = pickle.load(f)
             print(f"[INFO] Successfully loaded {len(report_data)} records from file.")
+
+            # Clean up any leftover checkpoint files
+            cleanup_checkpoint_files(checkpoint_files)
+
+            # Skip to display section
+            display_results(report_data, combined_string_filename)
+            return
         except Exception as e:
             print(f"[ERROR] Failed to load data from {pickle_filename}: {e}. Will attempt to re-fetch.")
-            report_data = []  # Reset if loading failed
 
-    if not report_data:  # If no data loaded from file, then fetch
-        print(
-            f"[INFO] No pre-existing data found for today ({today_str}) with cutoff ({CUTOFF_DATE_STR}). Fetching new data.")
+    # --- Check for checkpoint data ---
+    processed_data, remaining_project_ids, current_index, total_count, progress_info = load_checkpoint(checkpoint_files)
+
+    if processed_data is not None and remaining_project_ids is not None:
+        # Resume from checkpoint
+        print(f"[RESUME] Resuming from checkpoint...")
+        user_input = input("Do you want to resume from the checkpoint? (y/n): ").lower().strip()
+        if user_input != 'y':
+            print("[INFO] Starting fresh (checkpoint files will be overwritten)")
+            processed_data = None
+
+    if processed_data is None:
+        # Start fresh - fetch all project IDs first
+        print("[INFO] Starting fresh data fetch...")
         all_data_from_search = []
         start = 0
         print(f"[INFO] Attempting to fetch up to {RECORD_LIMIT} latest records from TDLR.")
+
         while len(all_data_from_search) < RECORD_LIMIT:
             print(f"[INFO] Fetching records {start} to {start + PAGE_SIZE}...")
             try:
@@ -206,6 +303,7 @@ def main():
             except requests.exceptions.RequestException as e:
                 print(f"[ERROR] Request failed during main search: {e}")
                 break
+
             try:
                 payload = response.json()
             except requests.exceptions.JSONDecodeError:
@@ -217,6 +315,7 @@ def main():
             if not new_data:
                 print("[INFO] No more data found from the source.")
                 break
+
             all_data_from_search.extend(new_data)
             if len(new_data) < PAGE_SIZE:
                 print("[INFO] Fetched all available data within the current query page size.")
@@ -226,54 +325,96 @@ def main():
         all_data_from_search = all_data_from_search[:RECORD_LIMIT]
         print(f"[INFO] Successfully fetched {len(all_data_from_search)} records from TDLR main search.")
 
+        # Filter by cutoff date and prepare project list
         try:
             cutoff_date_obj = datetime.strptime(CUTOFF_DATE_STR, '%Y-%m-%d').date()
             print(f"[INFO] Filtering records on or after cutoff date: {cutoff_date_obj.isoformat()}")
         except ValueError:
             print(f"[ERROR] Invalid CUTOFF_DATE_STR: '{CUTOFF_DATE_STR}'. Please use 'YYYY-MM-DD' format.")
-            return  # Exit if cutoff date is invalid
+            return
 
-        temp_report_data = []
-        print(f"[INFO] Processing {len(all_data_from_search)} records to fetch scope of work and filter...")
-        for i, record in enumerate(all_data_from_search):
+        # Create list of projects that need processing
+        remaining_project_ids = []
+        for record in all_data_from_search:
             project_created_on_str = record.get('ProjectCreatedOn')
             record_date = parse_tdlr_date_str(project_created_on_str)
 
             if record_date and record_date >= cutoff_date_obj:
-                project_number = record.get('ProjectNumber')
-                print(f"[INFO] ({i + 1}/{len(all_data_from_search)}) Fetching scope for project: {project_number}")
-                scope_of_work = fetch_scope_of_work(session, project_number)
+                remaining_project_ids.append(record)
 
-                city_name = record.get('City')
-                county_name = record.get('County')
-                city_id = LOOKUP.get("CITIES", {}).get(str(city_name)) if city_name else None
-                county_id = LOOKUP.get("COUNTIES", {}).get(str(county_name)) if county_name else None
+        processed_data = []
+        current_index = 0
+        total_count = len(remaining_project_ids)
 
-                temp_report_data.append({
-                    'ProjectNumber': project_number if project_number else 'N/A',
-                    'ProjectName': record.get('ProjectName', 'N/A'),
-                    'Date': record_date.isoformat() if record_date else 'N/A',
-                    'FacilityName': record.get('FacilityName', 'N/A'),
-                    'City': city_id,
-                    'County': county_id,
-                    'CountyName': county_name,  # Keep original county name for filtering
-                    'ScopeOfWork': scope_of_work
-                })
-        report_data = temp_report_data  # Assign to the main report_data variable
-        print(f"[INFO] Found {len(report_data)} records matching criteria and processed scope of work.")
+        print(f"[INFO] Found {total_count} records matching criteria. Starting to process...")
 
-        # --- Save newly fetched data to pickle file ---
-        if report_data:
-            try:
-                with open(pickle_filename, 'wb') as f:
-                    pickle.dump(report_data, f)
-                print(f"[SUCCESS] Report data successfully saved to {pickle_filename}")
-            except IOError as e:
-                print(f"[ERROR] Failed to save data to pickle file {pickle_filename}: {e}")
-        else:
-            print("[INFO] No data to save as report_data is empty after fetching.")
+    # Process remaining projects with checkpointing
+    try:
+        for i, record in enumerate(remaining_project_ids):
+            actual_index = current_index + i
+            project_number = record.get('ProjectNumber')
 
-    # --- Generate and Display Table using Tabulate ---
+            print(f"[INFO] ({actual_index + 1}/{total_count}) Fetching scope for project: {project_number}")
+
+            scope_of_work = fetch_scope_of_work(session, project_number)
+
+            project_created_on_str = record.get('ProjectCreatedOn')
+            record_date = parse_tdlr_date_str(project_created_on_str)
+
+            city_name = record.get('City')
+            county_name = record.get('County')
+            city_id = LOOKUP.get("CITIES", {}).get(str(city_name)) if city_name else None
+            county_id = LOOKUP.get("COUNTIES", {}).get(str(county_name)) if county_name else None
+
+            processed_item = {
+                'ProjectNumber': project_number if project_number else 'N/A',
+                'ProjectName': record.get('ProjectName', 'N/A'),
+                'Date': record_date.isoformat() if record_date else 'N/A',
+                'FacilityName': record.get('FacilityName', 'N/A'),
+                'City': city_id,
+                'County': county_id,
+                'CountyName': county_name,  # Keep original county name for filtering
+                'ScopeOfWork': scope_of_work
+            }
+
+            processed_data.append(processed_item)
+
+            # Save checkpoint every CHECKPOINT_INTERVAL records
+            if (i + 1) % CHECKPOINT_INTERVAL == 0:
+                remaining_for_checkpoint = remaining_project_ids[i + 1:]  # Remaining items after current
+                save_checkpoint(checkpoint_files, processed_data, remaining_for_checkpoint, actual_index + 1,
+                                total_count)
+
+        # Processing completed successfully
+        print(f"[SUCCESS] Processing completed! Processed {len(processed_data)} records.")
+
+        # Save final data to main pickle file
+        with open(pickle_filename, 'wb') as f:
+            pickle.dump(processed_data, f)
+        print(f"[SUCCESS] Report data successfully saved to {pickle_filename}")
+
+        # Clean up checkpoint files
+        cleanup_checkpoint_files(checkpoint_files)
+
+    except KeyboardInterrupt:
+        print("\n[INFO] Process interrupted by user. Saving checkpoint...")
+        remaining_for_checkpoint = remaining_project_ids[i:]  # Current item and remaining
+        save_checkpoint(checkpoint_files, processed_data, remaining_for_checkpoint, actual_index, total_count)
+        print("[INFO] Checkpoint saved. You can resume later by running the script again.")
+        return
+    except Exception as e:
+        print(f"\n[ERROR] Unexpected error: {e}. Saving checkpoint...")
+        remaining_for_checkpoint = remaining_project_ids[i:]  # Current item and remaining
+        save_checkpoint(checkpoint_files, processed_data, remaining_for_checkpoint, actual_index, total_count)
+        print("[ERROR] Checkpoint saved. You can resume later by running the script again.")
+        return
+
+    # Display results
+    display_results(processed_data, combined_string_filename)
+
+
+def display_results(report_data, combined_string_filename):
+    """Display and save the final results"""
     if report_data:
         print("\n--- Complete Project Report (All Data) ---")
         print(f"Total records in dataset: {len(report_data)}")
