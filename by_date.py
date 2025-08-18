@@ -10,10 +10,10 @@ from tabulate import tabulate
 import json
 
 # --- Settings ---
-CUTOFF_DATE_STR = '2025-06-17'
+CUTOFF_DATE_STR = '2025-08-18'
 COOKIE_FILE = 'cookies.txt'
 SEARCH_URL = 'https://www.tdlr.texas.gov/TABS/Search/SearchProjects'
-RECORD_LIMIT = 5000
+RECORD_LIMIT = 300
 PAGE_SIZE = 100
 TYPE_OF_WORK = ''
 OUTPUT_DATA_FOLDER = 'output_data'  # Folder to store pickle files
