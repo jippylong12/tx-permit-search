@@ -198,7 +198,7 @@ def search_projects(filename, search_terms):
 # Example usage
 if __name__ == "__main__":
     # Example calls - replace with your actual pickle file path
-    pickle_file = "output_data/project_report_data_2025-08-18_cutoff_2025_07_17.pkl"
+    pickle_file = "output_data/project_report_data_2025-11-25_cutoff_2025_11_17.pkl"
 
     # Print all data
     # print_all_projects(pickle_file)

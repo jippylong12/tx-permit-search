@@ -10,27 +10,14 @@ from tabulate import tabulate
 import json
 
 # --- Settings ---
-CUTOFF_DATE_STR = '2025-08-18'
+CUTOFF_DATE_STR = '2025-11-25'
 COOKIE_FILE = 'cookies.txt'
 SEARCH_URL = 'https://www.tdlr.texas.gov/TABS/Search/SearchProjects'
-RECORD_LIMIT = 300
 PAGE_SIZE = 100
 TYPE_OF_WORK = ''
 OUTPUT_DATA_FOLDER = 'output_data'  # Folder to store pickle files
 CHECKPOINT_INTERVAL = 100  # Save progress every 100 records
 
-# --- Filter Settings ---
-TARGET_COUNTIES = ['Martin', 'Midland', 'Ector']  # Counties to filter for console display
-EV_CHARGING_TERMS = [
-    'electric vehicle', 'ev', 'charging', 'charger', 'station',
-    'fast charging', 'dc fast', 'level 2', 'level 3',
-    'tesla', 'supercharger', 'chargepoint', 'electrify america',
-    'battery', 'lithium', 'power supply', 'electrical',
-    'renewable', 'solar', 'grid', 'infrastructure',
-    'plug-in', 'charging port', 'charging network',
-    'electric car', 'electric truck', 'hybrid',
-    'charging hub', 'charging plaza'
-]
 
 # --- Global headers for requests ---
 REQUEST_HEADERS = {
@@ -194,28 +181,6 @@ def fetch_scope_of_work(http_session, project_number):
         return "Error parsing"
 
 
-# --- Function to check if project matches filters ---
-def matches_filter_criteria(item):
-    """Check if project matches county and EV charging term filters"""
-    # Check county filter
-    county_name = item.get('CountyName', '')
-    if county_name not in TARGET_COUNTIES:
-        return False
-
-    # Check EV charging terms in scope of work
-    scope_of_work = item.get('ScopeOfWork', '').lower()
-    project_name = item.get('ProjectName', '').lower()
-    facility_name = item.get('FacilityName', '').lower()
-
-    # Combine all text fields for searching
-    search_text = f"{scope_of_work} {project_name} {facility_name}"
-
-    # Check if any EV charging term is present
-    for term in EV_CHARGING_TERMS:
-        if term.lower() in search_text:
-            return True
-
-    return False
 
 
 # --- Function to get county name from ID ---
@@ -291,11 +256,20 @@ def main():
     if processed_data is None:
         # Start fresh - fetch all project IDs first
         print("[INFO] Starting fresh data fetch...")
-        all_data_from_search = []
         start = 0
-        print(f"[INFO] Attempting to fetch up to {RECORD_LIMIT} latest records from TDLR.")
 
-        while len(all_data_from_search) < RECORD_LIMIT:
+        # Parse cutoff date once before fetching
+        try:
+            cutoff_date_obj = datetime.strptime(CUTOFF_DATE_STR, '%Y-%m-%d').date()
+            print(f"[INFO] Will fetch records until going past cutoff date: {cutoff_date_obj.isoformat()}")
+        except ValueError:
+            print(f"[ERROR] Invalid CUTOFF_DATE_STR: '{CUTOFF_DATE_STR}'. Please use 'YYYY-MM-DD' format.")
+            return
+
+        remaining_project_ids = []
+        reached_cutoff = False
+
+        while not reached_cutoff:
             print(f"[INFO] Fetching records {start} to {start + PAGE_SIZE}...")
             try:
                 response = session.post(SEARCH_URL, data=build_form_data(start), headers=REQUEST_HEADERS, timeout=30)
@@ -316,37 +290,33 @@ def main():
                 print("[INFO] No more data found from the source.")
                 break
 
-            all_data_from_search.extend(new_data)
+            # Add only records on/after cutoff and stop when we reach older ones
+            for record in new_data:
+                project_created_on_str = record.get('ProjectCreatedOn')
+                record_date = parse_tdlr_date_str(project_created_on_str)
+                if record_date is None:
+                    continue
+                if record_date >= cutoff_date_obj:
+                    remaining_project_ids.append(record)
+                else:
+                    reached_cutoff = True
+                    break
+
+            if reached_cutoff:
+                print("[INFO] Reached records older than cutoff date. Stopping fetch.")
+                break
+
             if len(new_data) < PAGE_SIZE:
                 print("[INFO] Fetched all available data within the current query page size.")
                 break
+
             start += PAGE_SIZE
-
-        all_data_from_search = all_data_from_search[:RECORD_LIMIT]
-        print(f"[INFO] Successfully fetched {len(all_data_from_search)} records from TDLR main search.")
-
-        # Filter by cutoff date and prepare project list
-        try:
-            cutoff_date_obj = datetime.strptime(CUTOFF_DATE_STR, '%Y-%m-%d').date()
-            print(f"[INFO] Filtering records on or after cutoff date: {cutoff_date_obj.isoformat()}")
-        except ValueError:
-            print(f"[ERROR] Invalid CUTOFF_DATE_STR: '{CUTOFF_DATE_STR}'. Please use 'YYYY-MM-DD' format.")
-            return
-
-        # Create list of projects that need processing
-        remaining_project_ids = []
-        for record in all_data_from_search:
-            project_created_on_str = record.get('ProjectCreatedOn')
-            record_date = parse_tdlr_date_str(project_created_on_str)
-
-            if record_date and record_date >= cutoff_date_obj:
-                remaining_project_ids.append(record)
 
         processed_data = []
         current_index = 0
         total_count = len(remaining_project_ids)
 
-        print(f"[INFO] Found {total_count} records matching criteria. Starting to process...")
+        print(f"[INFO] Found {total_count} records on/after cutoff date. Starting to process...")
 
     # Process remaining projects with checkpointing
     try:
@@ -419,79 +389,27 @@ def display_results(report_data, combined_string_filename):
         print("\n--- Complete Project Report (All Data) ---")
         print(f"Total records in dataset: {len(report_data)}")
 
-        # Filter data for console display
-        filtered_data = []
+        # Build combined strings for ALL records (filtering handled by print_out.py)
+        combined_strings_for_llm = []
         for item in report_data:
-            # Add county name if not present (for compatibility with existing data)
-            if 'CountyName' not in item and item.get('County') is not None:
-                item['CountyName'] = get_county_name_from_id(item['County'])
+            project_number = item.get('ProjectNumber', 'N/A')
+            scope_of_work = item.get('ScopeOfWork', 'N/A')
+            combined_strings_for_llm.append(f"Project: {project_number}, Scope: {scope_of_work}")
 
-            if matches_filter_criteria(item):
-                filtered_data.append(item)
-
-        print(f"\n--- Filtered Project Report (Martin, Midland, Ector Counties + EV Charging Terms) ---")
-        print(f"Filtered records: {len(filtered_data)}")
-        print(f"Target Counties: {', '.join(TARGET_COUNTIES)}")
-        print(f"EV Charging Terms: {', '.join(EV_CHARGING_TERMS[:10])}... (and {len(EV_CHARGING_TERMS) - 10} more)")
-
-        if filtered_data:
-            display_list = []
-            combined_strings_for_llm = []
-
-            # Process ALL data for file output
-            for i, item in enumerate(report_data):
-                project_number = item.get('ProjectNumber', 'N/A')
-                scope_of_work = item.get('ScopeOfWork', 'N/A')
-                combined_string = f"Project: {project_number}, Scope: {scope_of_work}"
-                combined_strings_for_llm.append(combined_string)
-
-            # Process FILTERED data for console display
-            for i, item in enumerate(filtered_data):
-                project_number = item.get('ProjectNumber', 'N/A')
-                scope_of_work = item.get('ScopeOfWork', 'N/A')
-
-                display_item = {
-                    'No.': i + 1,
-                    'Project Number': project_number,
-                    'Project Name': str(item.get('ProjectName', 'N/A'))[:38] + (
-                        '...' if len(str(item.get('ProjectName', 'N/A'))) > 38 else ''),
-                    'Date': item.get('Date', 'N/A'),
-                    'Facility Name': str(item.get('FacilityName', 'N/A'))[:28] + (
-                        '...' if len(str(item.get('FacilityName', 'N/A'))) > 28 else ''),
-                    'City (ID)': item.get('City') if item.get('City') is not None else 'N/A',
-                    'County': item.get('CountyName', 'N/A'),
-                    'Scope of Work': scope_of_work
-                }
-                display_list.append(display_item)
-
-            headers = {
-                'No.': 'No.',
-                'Project Number': 'Project Number',
-                'Project Name': 'Project Name',
-                'Date': 'Date',
-                'Facility Name': 'Facility Name',
-                'City (ID)': 'City (ID)',
-                'County': 'County',
-                'Scope of Work': 'Scope of Work'
-            }
-            print(tabulate(display_list, headers=headers, tablefmt="grid"))
-
-            # --- Write the consolidated string to a file (ALL DATA) ---
-            if combined_strings_for_llm:
-                try:
-                    with open(combined_string_filename, 'w', encoding='utf-8') as f:
-                        for s in combined_strings_for_llm:
-                            f.write(s + "\n")
-                    print(
-                        f"\n[SUCCESS] Combined LLM string (ALL {len(combined_strings_for_llm)} records) successfully saved to {combined_string_filename}")
-                except IOError as e:
-                    print(f"\n[ERROR] Failed to save combined LLM string to {combined_string_filename}: {e}")
-            else:
-                print("\n[INFO] No combined LLM strings to save.")
+        # --- Write the consolidated string to a file (ALL DATA) ---
+        if combined_strings_for_llm:
+            try:
+                with open(combined_string_filename, 'w', encoding='utf-8') as f:
+                    for s in combined_strings_for_llm:
+                        f.write(s + "\n")
+                print(
+                    f"\n[SUCCESS] Combined LLM string (ALL {len(combined_strings_for_llm)} records) successfully saved to {combined_string_filename}")
+            except IOError as e:
+                print(f"\n[ERROR] Failed to save combined LLM string to {combined_string_filename}: {e}")
         else:
-            print("\n[INFO] No records match the filter criteria for display.")
+            print("\n[INFO] No combined LLM strings to save.")
     else:
-        print("\n[INFO] No records to display based on the specified criteria (either from file or after fetching).")
+        print("\n[INFO] No records to display.")
 
     print("\n[SUCCESS] Report generation finished.")
 
